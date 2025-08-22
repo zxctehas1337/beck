@@ -296,9 +296,18 @@ async function startServer() {
           chatId,
         });
 
+        // Нормализуем поля для совместимости с клиентами
+        const normalizedMsg = {
+          _id: msg.id,
+          username: msg.username,
+          text: msg.text,
+          chatId: msg.chat_id, // Преобразуем chat_id в chatId
+          timestamp: msg.timestamp
+        };
+
         // Broadcast to all websocket clients, same as realtime flow
         try {
-          const outgoing = JSON.stringify({ type: 'message', message: msg });
+          const outgoing = JSON.stringify({ type: 'message', message: normalizedMsg });
           wss.clients.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
               client.send(outgoing);
@@ -308,7 +317,7 @@ async function startServer() {
           console.error('⚠️ Broadcast error after HTTP send:', broadcastErr);
         }
 
-        return res.json({ message: 'Message sent successfully', msg });
+        return res.json({ message: 'Message sent successfully', msg: normalizedMsg });
       } catch (e) {
         console.error('❌ Send message error:', e);
         return res.status(500).json({ error: 'Internal server error' });
@@ -498,7 +507,16 @@ async function startServer() {
             chatId: parsed.chatId,
           });
 
-          const outgoing = JSON.stringify({ type: 'message', message: msg });
+          // Нормализуем поля для совместимости с клиентами
+          const normalizedMsg = {
+            _id: msg.id,
+            username: msg.username,
+            text: msg.text,
+            chatId: msg.chat_id, // Преобразуем chat_id в chatId
+            timestamp: msg.timestamp
+          };
+
+          const outgoing = JSON.stringify({ type: 'message', message: normalizedMsg });
           console.log(`📤 Отправляю сообщение всем клиентам: ${outgoing}`);
           
           wss.clients.forEach((client) => {
