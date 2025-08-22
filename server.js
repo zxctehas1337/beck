@@ -29,7 +29,10 @@ async function startServer() {
     
     // HTTP server (Express)
     const app = express();
-    app.use(cors());
+    app.use(cors({
+      origin: true, // Разрешить все домены для тестирования
+      credentials: true
+    }));
     app.use(express.json());
     
     // Simple request logging
@@ -469,9 +472,52 @@ async function startServer() {
       this.isAlive = true;
     }
 
-    wss.on('connection', (ws) => {
+    wss.on('connection', async (ws) => {
+      console.log('🔌 Новый клиент подключился');
+      
       ws.isAlive = true;
       ws.on('pong', heartbeat);
+
+      ws.on('message', async (data) => {
+        try {
+          const text = typeof data === 'string' ? data : data.toString();
+          console.log('📨 Получено WebSocket сообщение:', text);
+          
+          const parsed = JSON.parse(text); // { username, text, chatId }
+
+          if (!parsed?.username || !parsed?.text || !parsed?.chatId) {
+            console.warn('⚠️ Неполное сообщение:', parsed);
+            return;
+          }
+
+          console.log(`💬 Создаю сообщение от ${parsed.username}: ${parsed.text}`);
+
+          const msg = await Message.create({
+            username: parsed.username,
+            text: parsed.text,
+            chatId: parsed.chatId,
+          });
+
+          const outgoing = JSON.stringify({ type: 'message', message: msg });
+          console.log(`📤 Отправляю сообщение всем клиентам: ${outgoing}`);
+          
+          wss.clients.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(outgoing);
+            }
+          });
+        } catch (err) {
+          console.error('⚠️ Ошибка обработки сообщения:', err);
+        }
+      });
+
+      ws.on('close', () => {
+        console.log('❌ Клиент отключился');
+      });
+      
+      ws.on('error', (error) => {
+        console.error('💥 WebSocket ошибка:', error);
+      });
     });
 
     const interval = setInterval(() => {
@@ -486,38 +532,6 @@ async function startServer() {
 
     wss.on('close', function close() {
       clearInterval(interval);
-    });
-
-    wss.on('connection', async (ws) => {
-      console.log('🔌 Новый клиент подключился');
-
-      ws.on('message', async (data) => {
-        try {
-          const text = typeof data === 'string' ? data : data.toString();
-          const parsed = JSON.parse(text); // { username, text, chatId }
-
-          if (!parsed?.username || !parsed?.text || !parsed?.chatId) return;
-
-          const msg = await Message.create({
-            username: parsed.username,
-            text: parsed.text,
-            chatId: parsed.chatId,
-          });
-
-          const outgoing = JSON.stringify({ type: 'message', message: msg });
-          wss.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(outgoing);
-            }
-          });
-        } catch (err) {
-          console.error('⚠️ Ошибка обработки сообщения:', err);
-        }
-      });
-
-      ws.on('close', () => {
-        console.log('❌ Клиент отключился');
-      });
     });
 
     server.listen(PORT, '0.0.0.0', () => {
