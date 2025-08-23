@@ -83,7 +83,23 @@ async function startServer() {
 
     // Lightweight health check to help with warmups
     app.get('/api/health', (_req, res) => {
-      res.json({ ok: true, uptime: process.uptime() });
+      res.json({ 
+        ok: true, 
+        uptime: process.uptime(),
+        websocket: {
+          connectedClients: wss.clients.size,
+          server: 'running'
+        }
+      });
+    });
+
+    // WebSocket status endpoint
+    app.get('/api/websocket/status', (_req, res) => {
+      res.json({
+        status: 'running',
+        connectedClients: wss.clients.size,
+        uptime: process.uptime()
+      });
     });
 
     // Auth: Register
@@ -274,7 +290,17 @@ async function startServer() {
         const { chatId } = req.params;
         const messages = await Message.find({ chatId });
         
-        return res.json(messages);
+        // Нормализуем сообщения для совместимости с клиентами
+        const normalizedMessages = messages.map(msg => ({
+          _id: msg.id,
+          id: msg.id,
+          username: msg.username,
+          text: msg.text,
+          chatId: msg.chat_id, // Преобразуем chat_id в chatId
+          timestamp: msg.timestamp
+        }));
+        
+        return res.json(normalizedMessages);
       } catch (e) {
         console.error('❌ Get chat messages error:', e);
         return res.status(500).json({ error: 'Internal server error' });
@@ -299,6 +325,7 @@ async function startServer() {
         // Нормализуем поля для совместимости с клиентами
         const normalizedMsg = {
           _id: msg.id,
+          id: msg.id, // Добавляем id для совместимости с веб-клиентом
           username: msg.username,
           text: msg.text,
           chatId: msg.chat_id, // Преобразуем chat_id в chatId
@@ -481,21 +508,52 @@ async function startServer() {
       this.isAlive = true;
     }
 
-    wss.on('connection', async (ws) => {
+    wss.on('connection', async (ws, req) => {
       console.log('🔌 Новый клиент подключился');
+      
+      // Логируем подключение в базу данных
+      try {
+        const client = await pool.connect();
+        await client.query(`
+          INSERT INTO websocket_logs (event_type, details, timestamp)
+          VALUES ($1, $2, $3)
+        `, ['connection', `Client connected from ${req.socket.remoteAddress}`, new Date()]);
+        client.release();
+      } catch (logErr) {
+        console.error('⚠️ Ошибка логирования подключения:', logErr);
+      }
       
       ws.isAlive = true;
       ws.on('pong', heartbeat);
+
+      // Отправляем приветственное сообщение
+      try {
+        const welcomeMsg = JSON.stringify({ 
+          type: 'connection', 
+          message: 'Connected successfully',
+          timestamp: new Date().toISOString()
+        });
+        ws.send(welcomeMsg);
+      } catch (err) {
+        console.error('⚠️ Ошибка отправки приветственного сообщения:', err);
+      }
 
       ws.on('message', async (data) => {
         try {
           const text = typeof data === 'string' ? data : data.toString();
           console.log('📨 Получено WebSocket сообщение:', text);
           
-          const parsed = JSON.parse(text); // { username, text, chatId }
+          const parsed = JSON.parse(text); // { username, text, chatId, id? }
 
           if (!parsed?.username || !parsed?.text || !parsed?.chatId) {
             console.warn('⚠️ Неполное сообщение:', parsed);
+            // Отправляем ошибку клиенту
+            const errorMsg = JSON.stringify({ 
+              type: 'error', 
+              message: 'Invalid message format. Required fields: username, text, chatId',
+              timestamp: new Date().toISOString()
+            });
+            ws.send(errorMsg);
             return;
           }
 
@@ -510,6 +568,7 @@ async function startServer() {
           // Нормализуем поля для совместимости с клиентами
           const normalizedMsg = {
             _id: msg.id,
+            id: parsed.id || msg.id, // Используем ID от клиента или генерируем новый
             username: msg.username,
             text: msg.text,
             chatId: msg.chat_id, // Преобразуем chat_id в chatId
@@ -519,22 +578,81 @@ async function startServer() {
           const outgoing = JSON.stringify({ type: 'message', message: normalizedMsg });
           console.log(`📤 Отправляю сообщение всем клиентам: ${outgoing}`);
           
+          // Отправляем сообщение всем подключенным клиентам
+          let sentCount = 0;
           wss.clients.forEach((client) => {
             if (client.readyState === WebSocket.OPEN) {
-              client.send(outgoing);
+              try {
+                client.send(outgoing);
+                sentCount++;
+              } catch (sendErr) {
+                console.error('⚠️ Ошибка отправки сообщения клиенту:', sendErr);
+              }
             }
           });
+          
+          console.log(`✅ Сообщение отправлено ${sentCount} клиентам`);
+          
+          // Логируем успешную отправку
+          try {
+            const client = await pool.connect();
+            await client.query(`
+              INSERT INTO websocket_logs (event_type, details, timestamp)
+              VALUES ($1, $2, $3)
+            `, ['message_sent', `Message from ${parsed.username} sent to ${sentCount} clients`, new Date()]);
+            client.release();
+          } catch (logErr) {
+            console.error('⚠️ Ошибка логирования сообщения:', logErr);
+          }
+          
+          // Отправляем подтверждение отправителю
+          const confirmation = JSON.stringify({ 
+            type: 'message_sent', 
+            messageId: msg.id,
+            timestamp: new Date().toISOString()
+          });
+          ws.send(confirmation);
+          
         } catch (err) {
           console.error('⚠️ Ошибка обработки сообщения:', err);
+          // Отправляем ошибку клиенту
+          const errorMsg = JSON.stringify({ 
+            type: 'error', 
+            message: 'Failed to process message',
+            timestamp: new Date().toISOString()
+          });
+          ws.send(errorMsg);
         }
       });
 
-      ws.on('close', () => {
-        console.log('❌ Клиент отключился');
+      ws.on('close', (code, reason) => {
+        console.log(`❌ Клиент отключился: код=${code}, причина=${reason}`);
+        
+        // Логируем отключение
+        pool.connect().then(client => {
+          client.query(`
+            INSERT INTO websocket_logs (event_type, details, timestamp)
+            VALUES ($1, $2, $3)
+          `, ['disconnection', `Client disconnected: code=${code}, reason=${reason}`, new Date()]);
+          client.release();
+        }).catch(logErr => {
+          console.error('⚠️ Ошибка логирования отключения:', logErr);
+        });
       });
       
       ws.on('error', (error) => {
         console.error('💥 WebSocket ошибка:', error);
+        
+        // Логируем ошибку
+        pool.connect().then(client => {
+          client.query(`
+            INSERT INTO websocket_logs (event_type, details, timestamp)
+            VALUES ($1, $2, $3)
+          `, ['error', `WebSocket error: ${error.message}`, new Date()]);
+          client.release();
+        }).catch(logErr => {
+          console.error('⚠️ Ошибка логирования ошибки:', logErr);
+        });
       });
     });
 

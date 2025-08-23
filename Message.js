@@ -1,4 +1,5 @@
 const { pool } = require('./db/init');
+const File = require('./File');
 
 class Message {
   static async find(query = {}) {
@@ -16,7 +17,16 @@ class Message {
       sql += ' ORDER BY timestamp ASC';
       
       const result = await client.query(sql, values);
-      return result.rows;
+      
+      // Загружаем файлы для каждого сообщения
+      const messagesWithFiles = await Promise.all(
+        result.rows.map(async (message) => {
+          const files = await File.findByMessageId(message.id);
+          return { ...message, files };
+        })
+      );
+      
+      return messagesWithFiles;
     } finally {
       client.release();
     }
