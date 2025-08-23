@@ -15,21 +15,21 @@ try {
   pool = dbInit.pool;
   initDatabase = dbInit.initDatabase;
 } catch (error) {
-  console.error('❌ Error loading db/init:', error);
+  console.error('⚠️ Error loading db/init:', error);
   process.exit(1);
 }
 
 try {
   Message = require('./Message');
 } catch (error) {
-  console.error('❌ Error loading Message module:', error);
+  console.error('⚠️ Error loading Message module:', error);
   process.exit(1);
 }
 
 try {
   User = require('./User');
 } catch (error) {
-  console.error('❌ Error loading User module:', error);
+  console.error('⚠️ Error loading User module:', error);
   process.exit(1);
 }
 
@@ -40,8 +40,13 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret';
 
 if (!DATABASE_URL) {
-  console.error('❌ Переменная окружения DATABASE_URL не задана. Добавьте ее в .env');
+  console.error('⚠️ Переменная окружения DATABASE_URL не задана. Добавьте ее в .env');
   process.exit(1);
+}
+
+// Heartbeat функция для WebSocket
+function heartbeat() {
+  this.isAlive = true;
 }
 
 // Инициализация базы данных
@@ -67,6 +72,35 @@ async function startServer() {
       });
       next();
     });
+
+    // Создаем HTTP сервер и WebSocket сервер
+    const server = http.createServer(app);
+    const wss = new WebSocket.Server({ server, path: '/ws' });
+
+    // Функция для broadcast сообщений через WebSocket
+    function broadcastToWebSocketClients(message) {
+      if (wss && wss.clients) {
+        try {
+          const outgoing = JSON.stringify({ type: 'message', message });
+          let sentCount = 0;
+          wss.clients.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              try {
+                client.send(outgoing);
+                sentCount++;
+              } catch (sendErr) {
+                console.error('⚠️ Ошибка отправки сообщения клиенту:', sendErr);
+              }
+            }
+          });
+          console.log(`📤 HTTP broadcast: сообщение отправлено ${sentCount} клиентам`);
+        } catch (broadcastErr) {
+          console.error('⚠️ Broadcast error after HTTP send:', broadcastErr);
+        }
+      } else {
+        console.log('⚠️ WebSocket server not ready for broadcast');
+      }
+    }
 
     // Validation functions
     function validateUsername(username) {
@@ -104,6 +138,23 @@ async function startServer() {
       return { valid: true, password };
     }
 
+    // Helper function to get user from token
+    async function getUserFromToken(req) {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return null;
+      }
+      
+      const token = authHeader.substring(7);
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const user = await User.findById(decoded.sub);
+        return user;
+      } catch (jwtError) {
+        return null;
+      }
+    }
+
     // Lightweight health check to help with warmups
     app.get('/api/health', (_req, res) => {
       res.json({ 
@@ -127,7 +178,7 @@ async function startServer() {
 
     // Auth: Register
     app.post('/api/auth/register', async (req, res) => {
-      console.log('📝 Registration request received:', { 
+      console.log('🔍 Registration request received:', { 
         body: req.body, 
         headers: req.headers,
         timestamp: new Date().toISOString()
@@ -139,14 +190,14 @@ async function startServer() {
         // Validate username
         const usernameValidation = validateUsername(username);
         if (!usernameValidation.valid) {
-          console.log('❌ Username validation failed:', usernameValidation.error);
+          console.log('⚠️ Username validation failed:', usernameValidation.error);
           return res.status(400).json({ error: usernameValidation.error });
         }
         
         // Validate password
         const passwordValidation = validatePassword(password);
         if (!passwordValidation.valid) {
-          console.log('❌ Password validation failed:', passwordValidation.error);
+          console.log('⚠️ Password validation failed:', passwordValidation.error);
           return res.status(400).json({ error: passwordValidation.error });
         }
         
@@ -154,11 +205,11 @@ async function startServer() {
         const usernameLower = usernameValidation.username.toLowerCase();
         const existing = await User.findOne({ usernameLower });
         if (existing) {
-          console.log('❌ Username already taken:', usernameLower);
+          console.log('⚠️ Username already taken:', usernameLower);
           return res.status(409).json({ error: 'Username already taken' });
         }
         
-        console.log('🔐 Hashing password...');
+        console.log('🔍 Hashing password...');
         const passwordHash = await bcrypt.hash(passwordValidation.password, 6);
         
         console.log('💾 Creating user...');
@@ -171,14 +222,14 @@ async function startServer() {
         console.log('✅ User created successfully:', { id: user.id, username: user.username });
         return res.status(201).json({ id: user.id, username: user.username, createdAt: user.created_at });
       } catch (e) {
-        console.error('❌ Register error:', e);
+        console.error('⚠️ Register error:', e);
         return res.status(500).json({ error: 'Internal server error' });
       }
     });
 
     // Auth: Login
     app.post('/api/auth/login', async (req, res) => {
-      console.log('🔐 Login request received:', { 
+      console.log('🔍 Login request received:', { 
         body: req.body, 
         timestamp: new Date().toISOString()
       });
@@ -189,33 +240,33 @@ async function startServer() {
         // Validate username
         const usernameValidation = validateUsername(username);
         if (!usernameValidation.valid) {
-          console.log('❌ Username validation failed:', usernameValidation.error);
+          console.log('⚠️ Username validation failed:', usernameValidation.error);
           return res.status(400).json({ error: usernameValidation.error });
         }
         
         // Validate password
         const passwordValidation = validatePassword(password);
         if (!passwordValidation.valid) {
-          console.log('❌ Password validation failed:', passwordValidation.error);
+          console.log('⚠️ Password validation failed:', passwordValidation.error);
           return res.status(400).json({ error: passwordValidation.error });
         }
         
         const usernameLower = usernameValidation.username.toLowerCase();
         const user = await User.findOne({ usernameLower });
         if (!user) {
-          console.log('❌ User not found:', usernameLower);
+          console.log('⚠️ User not found:', usernameLower);
           return res.status(401).json({ error: 'Invalid credentials' });
         }
         
         const ok = await bcrypt.compare(passwordValidation.password, user.password_hash);
         if (!ok) {
-          console.log('❌ Invalid password for user:', usernameLower);
+          console.log('⚠️ Invalid password for user:', usernameLower);
           return res.status(401).json({ error: 'Invalid credentials' });
         }
         
         // Check if user is blocked
         if (user.is_blocked) {
-          console.log('❌ Blocked user tried to login:', usernameLower);
+          console.log('⚠️ Blocked user tried to login:', usernameLower);
           return res.status(403).json({ 
             error: 'Account blocked', 
             reason: user.block_reason || 'No reason provided' 
@@ -245,7 +296,7 @@ async function startServer() {
           } 
         });
       } catch (e) {
-        console.error('❌ Login error:', e);
+        console.error('⚠️ Login error:', e);
         return res.status(500).json({ error: 'Internal server error' });
       }
     });
@@ -260,27 +311,10 @@ async function startServer() {
           createdAt: u.created_at 
         })));
       } catch (e) {
-        console.error('❌ Users list error:', e);
+        console.error('⚠️ Users list error:', e);
         return res.status(500).json({ error: 'Internal server error' });
       }
     });
-
-    // Helper function to get user from token
-    async function getUserFromToken(req) {
-      const authHeader = req.headers.authorization;
-      if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return null;
-      }
-      
-      const token = authHeader.substring(7);
-      try {
-        const decoded = jwt.verify(token, JWT_SECRET);
-        const user = await User.findById(decoded.sub);
-        return user;
-      } catch (jwtError) {
-        return null;
-      }
-    }
 
     // Clear all users (no auth required for testing)
     app.post('/api/users/clear-all', async (req, res) => {
@@ -302,7 +336,7 @@ async function startServer() {
           totalFound: allUsers.length
         });
       } catch (e) {
-        console.error('❌ Clear users error:', e);
+        console.error('⚠️ Clear users error:', e);
         return res.status(500).json({ error: 'Internal server error' });
       }
     });
@@ -313,25 +347,18 @@ async function startServer() {
         const { chatId } = req.params;
         const messages = await Message.find({ chatId });
         
-        // Нормализуем сообщения для совместимости с клиентами
+        // Возвращаем сообщения без replyTo
         const normalizedMessages = messages.map(msg => ({
           _id: msg.id,
           id: msg.id,
           username: msg.username,
           text: msg.text,
-          chatId: msg.chat_id, // Преобразуем chat_id в chatId
-          timestamp: msg.timestamp,
-          replyTo: msg.replyTo ? {
-            id: msg.replyTo.id,
-            username: msg.replyTo.username,
-            text: msg.replyTo.text,
-            timestamp: msg.replyTo.timestamp
-          } : null
+          chatId: msg.chat_id,
+          timestamp: msg.timestamp
         }));
-        
         return res.json(normalizedMessages);
       } catch (e) {
-        console.error('❌ Get chat messages error:', e);
+        console.error('⚠️ Get chat messages error:', e);
         return res.status(500).json({ error: 'Internal server error' });
       }
     });
@@ -339,50 +366,27 @@ async function startServer() {
     // Send message (HTTP endpoint for testing)
     app.post('/api/chat/send', async (req, res) => {
       try {
-        const { username, text, chatId, replyTo } = req.body;
-        
+        const { username, text, chatId } = req.body;
         if (!username || !text || !chatId) {
           return res.status(400).json({ error: 'Missing required fields' });
         }
-        
-        // Проверяем, существует ли сообщение, на которое отвечаем
-        let replyToMessage = null;
-        if (replyTo && replyTo.messageId) {
-          replyToMessage = await Message.findById(replyTo.messageId);
-          if (!replyToMessage) {
-            return res.status(400).json({ error: 'Reply message not found' });
-          }
-        }
-        
         const msg = await Message.create({
           username,
           text,
-          chatId,
-          replyTo: replyToMessage ? replyToMessage.id : null
+          chatId
         });
-
-        // Нормализуем поля для совместимости с клиентами
         const normalizedMsg = {
           _id: msg.id,
-          id: msg.id, // Добавляем id для совместимости с веб-клиентом
+          id: msg.id,
           username: msg.username,
           text: msg.text,
-          chatId: msg.chat_id, // Преобразуем chat_id в chatId
-          timestamp: msg.timestamp,
-          replyTo: msg.replyTo ? {
-            id: msg.replyTo.id,
-            username: msg.replyTo.username,
-            text: msg.replyTo.text,
-            timestamp: msg.replyTo.timestamp
-          } : null
+          chatId: msg.chat_id,
+          timestamp: msg.timestamp
         };
-
-        // Broadcast to all websocket clients, same as realtime flow
         broadcastToWebSocketClients(normalizedMsg);
-
         return res.json({ message: 'Message sent successfully', msg: normalizedMsg });
       } catch (e) {
-        console.error('❌ Send message error:', e);
+        console.error('⚠️ Send message error:', e);
         return res.status(500).json({ error: 'Internal server error' });
       }
     });
@@ -398,18 +402,19 @@ async function startServer() {
         const users = await User.find({});
         
         return res.json(users.map(u => ({
+          _id: u.id,
           id: u.id,
           username: u.username,
-          isAdmin: u.is_admin,
-          isBlocked: u.is_blocked,
-          blockReason: u.block_reason,
+          usernameLower: u.usernameLower,
+          createdAt: u.created_at,
           lastLoginAt: u.last_login_at,
           loginCount: u.login_count,
-          createdAt: u.created_at,
-          updatedAt: u.updated_at
+          isAdmin: u.is_admin,
+          isBlocked: u.is_blocked,
+          blockReason: u.block_reason
         })));
       } catch (e) {
-        console.error('❌ Admin users list error:', e);
+        console.error('⚠️ Admin users error:', e);
         return res.status(500).json({ error: 'Internal server error' });
       }
     });
@@ -455,7 +460,7 @@ async function startServer() {
           }
         });
       } catch (e) {
-        console.error('❌ Block user error:', e);
+        console.error('⚠️ Block user error:', e);
         return res.status(500).json({ error: 'Internal server error' });
       }
     });
@@ -492,7 +497,7 @@ async function startServer() {
           }
         });
       } catch (e) {
-        console.error('❌ Delete user error:', e);
+        console.error('⚠️ Delete user error:', e);
         return res.status(500).json({ error: 'Internal server error' });
       }
     });
@@ -531,52 +536,14 @@ async function startServer() {
           }
         });
       } catch (e) {
-        console.error('❌ Admin user error:', e);
+        console.error('⚠️ Admin user error:', e);
         return res.status(500).json({ error: 'Internal server error' });
       }
     });
 
-    const server = http.createServer(app);
-    const wss = new WebSocket.Server({ server, path: '/ws' });
-
-    // Функция для broadcast сообщений через WebSocket
-    function broadcastToWebSocketClients(message) {
-      if (wss && wss.clients) {
-        try {
-          const outgoing = JSON.stringify({ type: 'message', message });
-          let sentCount = 0;
-          wss.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-              try {
-                client.send(outgoing);
-                sentCount++;
-              } catch (sendErr) {
-                console.error('⚠️ Ошибка отправки сообщения клиенту:', sendErr);
-              }
-            }
-          });
-          console.log(`📤 HTTP broadcast: сообщение отправлено ${sentCount} клиентам`);
-        } catch (broadcastErr) {
-          console.error('⚠️ Broadcast error after HTTP send:', broadcastErr);
-        }
-      } else {
-        console.log('⚠️ WebSocket server not ready for broadcast');
-          const messages = await Message.find({ chatId });
-          // Возвращаем сообщения без replyTo
-          const normalizedMessages = messages.map(msg => ({
-            _id: msg.id,
-            id: msg.id,
-            username: msg.username,
-            text: msg.text,
-            chatId: msg.chat_id,
-            timestamp: msg.timestamp
-          }));
-          return res.json(normalizedMessages);
-      //   `, ['connection', `Client connected from ${req.socket.remoteAddress}`, new Date()]);
-      //   client.release();
-      // } catch (logErr) {
-      //   console.error('⚠️ Ошибка логирования подключения:', logErr);
-      // }
+    // WebSocket connection handling
+    wss.on('connection', (ws, req) => {
+      console.log(`✅ Новый WebSocket клиент подключился (всего: ${wss.clients.size})`);
       
       ws.isAlive = true;
       ws.on('pong', heartbeat);
@@ -607,30 +574,30 @@ async function startServer() {
             const errorMsg = JSON.stringify({ 
               type: 'error', 
               message: 'Invalid message format. Required fields: username, text, chatId',
-                const { username, text, chatId } = req.body;
-                if (!username || !text || !chatId) {
-                  return res.status(400).json({ error: 'Missing required fields' });
-                }
-                const msg = await Message.create({
-                  username,
-                  text,
-                  chatId
-                });
-                // Возвращаем простую структуру сообщения
-                const normalizedMsg = {
-                  _id: msg.id,
-                  id: msg.id,
-                  username: msg.username,
-                  text: msg.text,
-                  chatId: msg.chat_id,
-                  timestamp: msg.timestamp
-                };
-                broadcastToWebSocketClients(normalizedMsg);
-                return res.json({ message: 'Message sent successfully', msg: normalizedMsg });
-              username: msg.replyTo.username,
-              text: msg.replyTo.text,
-              timestamp: msg.replyTo.timestamp
-            } : null
+              timestamp: new Date().toISOString()
+            });
+            ws.send(errorMsg);
+            return;
+          }
+
+          // Создаем сообщение в базе данных
+          const msg = await Message.create({
+            username: parsed.username,
+            text: parsed.text,
+            chatId: parsed.chatId
+          });
+          
+          console.log('💾 Сообщение сохранено в БД:', msg.id);
+          console.log(`💬 ChatId: ${parsed.chatId}`);
+
+          // Нормализуем структуру сообщения
+          const normalizedMsg = {
+            _id: msg.id,
+            id: msg.id,
+            username: msg.username,
+            text: msg.text,
+            chatId: msg.chat_id,
+            timestamp: msg.timestamp
           };
 
           const outgoing = JSON.stringify({ type: 'message', message: normalizedMsg });
@@ -655,18 +622,6 @@ async function startServer() {
           
           console.log(`✅ Сообщение отправлено ${sentCount} клиентам из ${wss.clients.size}`);
           
-          // Логируем успешную отправку (временно отключено)
-          // try {
-          //   const client = await pool.connect();
-          //   await client.query(`
-          //     INSERT INTO websocket_logs (event_type, details, timestamp)
-          //     VALUES ($1, $2, $3)
-          //   `, ['message_sent', `Message from ${parsed.username} sent to ${sentCount} clients`, new Date()]);
-          //   client.release();
-          // } catch (logErr) {
-          //   console.error('⚠️ Ошибка логирования сообщения:', logErr);
-                console.log(`💬 ChatId: ${parsed.chatId}`);
-          
           // Отправляем подтверждение отправителю
           const confirmation = JSON.stringify({ 
             type: 'message_sent', 
@@ -689,34 +644,14 @@ async function startServer() {
 
       ws.on('close', (code, reason) => {
         console.log(`❌ Клиент отключился: код=${code}, причина=${reason}`);
-        
-        // Логируем отключение (временно отключено)
-        // pool.connect().then(client => {
-        //   client.query(`
-        //     INSERT INTO websocket_logs (event_type, details, timestamp)
-        //     VALUES ($1, $2, $3)
-        //   `, ['disconnection', `Client disconnected: code=${code}, reason=${reason}`, new Date()]);
-        //   client.release();
-        // }).catch(logErr => {
-        //   console.error('⚠️ Ошибка логирования отключения:', logErr);
-        // });
       });
       
       ws.on('error', (error) => {
         console.error('💥 WebSocket ошибка:', error);
-        
-        // Логируем ошибку (временно отключено)
-        // pool.connect().then(client => {
-        //   client.query(`
-        //     INSERT INTO websocket_logs (event_type, details, timestamp)
-        //   `, ['error', `WebSocket error: ${error.message}`, new Date()]);
-        //   client.release();
-        // }).catch(logErr => {
-        //   console.error('⚠️ Ошибка логирования ошибки:', logErr);
-        // });
       });
     });
 
+    // Heartbeat interval для проверки живых соединений
     const interval = setInterval(() => {
       wss.clients.forEach((ws) => {
         if (ws.isAlive === false) return ws.terminate();
@@ -733,7 +668,7 @@ async function startServer() {
 
     server.listen(PORT, '0.0.0.0', () => {
       console.log(`🚀 Сервер запущен на порту ${PORT}`);
-      console.log(`🌐 Доступен по адресу: http://192.168.0.83:${PORT}`);
+      console.log(`🌍 Доступен по адресу: http://192.168.0.83:${PORT}`);
       console.log(`🔒 Локальный доступ: http://localhost:${PORT}`);
     });
 
