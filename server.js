@@ -572,17 +572,17 @@ async function startServer() {
     wss.on('connection', async (ws, req) => {
       console.log('🔌 Новый клиент подключился');
       
-      // Логируем подключение в базу данных
-      try {
-        const client = await pool.connect();
-        await client.query(`
-          INSERT INTO websocket_logs (event_type, details, timestamp)
-          VALUES ($1, $2, $3)
-        `, ['connection', `Client connected from ${req.socket.remoteAddress}`, new Date()]);
-        client.release();
-      } catch (logErr) {
-        console.error('⚠️ Ошибка логирования подключения:', logErr);
-      }
+      // Логируем подключение в базу данных (временно отключено)
+      // try {
+      //   const client = await pool.connect();
+      //   await client.query(`
+      //     INSERT INTO websocket_logs (event_type, details, timestamp)
+      //     VALUES ($1, $2, $3)
+      //   `, ['connection', `Client connected from ${req.socket.remoteAddress}`, new Date()]);
+      //   client.release();
+      // } catch (logErr) {
+      //   console.error('⚠️ Ошибка логирования подключения:', logErr);
+      // }
       
       ws.isAlive = true;
       ws.on('pong', heartbeat);
@@ -676,17 +676,17 @@ async function startServer() {
           
           console.log(`✅ Сообщение отправлено ${sentCount} клиентам из ${wss.clients.size}`);
           
-          // Логируем успешную отправку
-          try {
-            const client = await pool.connect();
-            await client.query(`
-              INSERT INTO websocket_logs (event_type, details, timestamp)
-              VALUES ($1, $2, $3)
-            `, ['message_sent', `Message from ${parsed.username} sent to ${sentCount} clients`, new Date()]);
-            client.release();
-          } catch (logErr) {
-            console.error('⚠️ Ошибка логирования сообщения:', logErr);
-          }
+          // Логируем успешную отправку (временно отключено)
+          // try {
+          //   const client = await pool.connect();
+          //   await client.query(`
+          //     INSERT INTO websocket_logs (event_type, details, timestamp)
+          //     VALUES ($1, $2, $3)
+          //   `, ['message_sent', `Message from ${parsed.username} sent to ${sentCount} clients`, new Date()]);
+          //   client.release();
+          // } catch (logErr) {
+          //   console.error('⚠️ Ошибка логирования сообщения:', logErr);
+          // }
           
           // Отправляем подтверждение отправителю
           const confirmation = JSON.stringify({ 
@@ -711,31 +711,30 @@ async function startServer() {
       ws.on('close', (code, reason) => {
         console.log(`❌ Клиент отключился: код=${code}, причина=${reason}`);
         
-        // Логируем отключение
-        pool.connect().then(client => {
-          client.query(`
-            INSERT INTO websocket_logs (event_type, details, timestamp)
-            VALUES ($1, $2, $3)
-          `, ['disconnection', `Client disconnected: code=${code}, reason=${reason}`, new Date()]);
-          client.release();
-        }).catch(logErr => {
-          console.error('⚠️ Ошибка логирования отключения:', logErr);
-        });
+        // Логируем отключение (временно отключено)
+        // pool.connect().then(client => {
+        //   client.query(`
+        //     INSERT INTO websocket_logs (event_type, details, timestamp)
+        //     VALUES ($1, $2, $3)
+        //   `, ['disconnection', `Client disconnected: code=${code}, reason=${reason}`, new Date()]);
+        //   client.release();
+        // }).catch(logErr => {
+        //   console.error('⚠️ Ошибка логирования отключения:', logErr);
+        // });
       });
       
       ws.on('error', (error) => {
         console.error('💥 WebSocket ошибка:', error);
         
-        // Логируем ошибку
-        pool.connect().then(client => {
-          client.query(`
-            INSERT INTO websocket_logs (event_type, details, timestamp)
-            VALUES ($1, $2, $3)
-          `, ['error', `WebSocket error: ${error.message}`, new Date()]);
-          client.release();
-        }).catch(logErr => {
-          console.error('⚠️ Ошибка логирования ошибки:', logErr);
-        });
+        // Логируем ошибку (временно отключено)
+        // pool.connect().then(client => {
+        //   client.query(`
+        //     INSERT INTO websocket_logs (event_type, details, timestamp)
+        //   `, ['error', `WebSocket error: ${error.message}`, new Date()]);
+        //   client.release();
+        // }).catch(logErr => {
+        //   console.error('⚠️ Ошибка логирования ошибки:', logErr);
+        // });
       });
     });
 
