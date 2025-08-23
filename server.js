@@ -6,9 +6,32 @@ const dotenv = require('dotenv');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { pool, initDatabase } = require('./db/init');
-const Message = require('./Message');
-const User = require('./User');
+
+// Безопасная загрузка модулей с обработкой ошибок
+let pool, initDatabase, Message, User;
+
+try {
+  const dbInit = require('./db/init');
+  pool = dbInit.pool;
+  initDatabase = dbInit.initDatabase;
+} catch (error) {
+  console.error('❌ Error loading db/init:', error);
+  process.exit(1);
+}
+
+try {
+  Message = require('./Message');
+} catch (error) {
+  console.error('❌ Error loading Message module:', error);
+  process.exit(1);
+}
+
+try {
+  User = require('./User');
+} catch (error) {
+  console.error('❌ Error loading User module:', error);
+  process.exit(1);
+}
 
 dotenv.config({ path: path.resolve(__dirname, '.env') });
 
@@ -310,16 +333,26 @@ async function startServer() {
     // Send message (HTTP endpoint for testing)
     app.post('/api/chat/send', async (req, res) => {
       try {
-        const { username, text, chatId } = req.body;
+        const { username, text, chatId, replyTo } = req.body;
         
         if (!username || !text || !chatId) {
           return res.status(400).json({ error: 'Missing required fields' });
+        }
+        
+        // Проверяем, существует ли сообщение, на которое отвечаем
+        let replyToMessage = null;
+        if (replyTo && replyTo.messageId) {
+          replyToMessage = await Message.findById(replyTo.messageId);
+          if (!replyToMessage) {
+            return res.status(400).json({ error: 'Reply message not found' });
+          }
         }
         
         const msg = await Message.create({
           username,
           text,
           chatId,
+          replyTo: replyToMessage ? replyToMessage.id : null
         });
 
         // Нормализуем поля для совместимости с клиентами
@@ -329,7 +362,13 @@ async function startServer() {
           username: msg.username,
           text: msg.text,
           chatId: msg.chat_id, // Преобразуем chat_id в chatId
-          timestamp: msg.timestamp
+          timestamp: msg.timestamp,
+          replyTo: msg.replyTo ? {
+            id: msg.replyTo.id,
+            username: msg.replyTo.username,
+            text: msg.replyTo.text,
+            timestamp: msg.replyTo.timestamp
+          } : null
         };
 
         // Broadcast to all websocket clients, same as realtime flow
@@ -559,10 +598,20 @@ async function startServer() {
 
           console.log(`💬 Создаю сообщение от ${parsed.username}: ${parsed.text}`);
 
+          // Проверяем, есть ли ответ на сообщение
+          let replyToMessage = null;
+          if (parsed.replyTo && parsed.replyTo.messageId) {
+            replyToMessage = await Message.findById(parsed.replyTo.messageId);
+            if (!replyToMessage) {
+              console.warn('⚠️ Reply message not found:', parsed.replyTo.messageId);
+            }
+          }
+          
           const msg = await Message.create({
             username: parsed.username,
             text: parsed.text,
             chatId: parsed.chatId,
+            replyTo: replyToMessage ? replyToMessage.id : null
           });
 
           // Нормализуем поля для совместимости с клиентами
@@ -572,7 +621,13 @@ async function startServer() {
             username: msg.username,
             text: msg.text,
             chatId: msg.chat_id, // Преобразуем chat_id в chatId
-            timestamp: msg.timestamp
+            timestamp: msg.timestamp,
+            replyTo: msg.replyTo ? {
+              id: msg.replyTo.id,
+              username: msg.replyTo.username,
+              text: msg.replyTo.text,
+              timestamp: msg.replyTo.timestamp
+            } : null
           };
 
           const outgoing = JSON.stringify({ type: 'message', message: normalizedMsg });
