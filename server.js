@@ -561,23 +561,17 @@ async function startServer() {
         }
       } else {
         console.log('⚠️ WebSocket server not ready for broadcast');
-      }
-    }
-
-    // Keepalive ping to prevent idle disconnects on hosting providers
-    function heartbeat() {
-      this.isAlive = true;
-    }
-
-    wss.on('connection', async (ws, req) => {
-      console.log('🔌 Новый клиент подключился');
-      
-      // Логируем подключение в базу данных (временно отключено)
-      // try {
-      //   const client = await pool.connect();
-      //   await client.query(`
-      //     INSERT INTO websocket_logs (event_type, details, timestamp)
-      //     VALUES ($1, $2, $3)
+          const messages = await Message.find({ chatId });
+          // Возвращаем сообщения без replyTo
+          const normalizedMessages = messages.map(msg => ({
+            _id: msg.id,
+            id: msg.id,
+            username: msg.username,
+            text: msg.text,
+            chatId: msg.chat_id,
+            timestamp: msg.timestamp
+          }));
+          return res.json(normalizedMessages);
       //   `, ['connection', `Client connected from ${req.socket.remoteAddress}`, new Date()]);
       //   client.release();
       // } catch (logErr) {
@@ -613,41 +607,26 @@ async function startServer() {
             const errorMsg = JSON.stringify({ 
               type: 'error', 
               message: 'Invalid message format. Required fields: username, text, chatId',
-              timestamp: new Date().toISOString()
-            });
-            ws.send(errorMsg);
-            return;
-          }
-
-          console.log(`💬 Создаю сообщение от ${parsed.username}: ${parsed.text}`);
-          console.log(`💬 ChatId: ${parsed.chatId}, ReplyTo: ${parsed.replyTo ? 'yes' : 'no'}`);
-
-          // Проверяем, есть ли ответ на сообщение
-          let replyToMessage = null;
-          if (parsed.replyTo && parsed.replyTo.messageId) {
-            replyToMessage = await Message.findById(parsed.replyTo.messageId);
-            if (!replyToMessage) {
-              console.warn('⚠️ Reply message not found:', parsed.replyTo.messageId);
-            }
-          }
-          
-          const msg = await Message.create({
-            username: parsed.username,
-            text: parsed.text,
-            chatId: parsed.chatId,
-            replyTo: replyToMessage ? replyToMessage.id : null
-          });
-
-          // Нормализуем поля для совместимости с клиентами
-          const normalizedMsg = {
-            _id: msg.id,
-            id: parsed.id || msg.id, // Используем ID от клиента или генерируем новый
-            username: msg.username,
-            text: msg.text,
-            chatId: msg.chat_id, // Преобразуем chat_id в chatId
-            timestamp: msg.timestamp,
-            replyTo: msg.replyTo ? {
-              id: msg.replyTo.id,
+                const { username, text, chatId } = req.body;
+                if (!username || !text || !chatId) {
+                  return res.status(400).json({ error: 'Missing required fields' });
+                }
+                const msg = await Message.create({
+                  username,
+                  text,
+                  chatId
+                });
+                // Возвращаем простую структуру сообщения
+                const normalizedMsg = {
+                  _id: msg.id,
+                  id: msg.id,
+                  username: msg.username,
+                  text: msg.text,
+                  chatId: msg.chat_id,
+                  timestamp: msg.timestamp
+                };
+                broadcastToWebSocketClients(normalizedMsg);
+                return res.json({ message: 'Message sent successfully', msg: normalizedMsg });
               username: msg.replyTo.username,
               text: msg.replyTo.text,
               timestamp: msg.replyTo.timestamp
@@ -686,7 +665,7 @@ async function startServer() {
           //   client.release();
           // } catch (logErr) {
           //   console.error('⚠️ Ошибка логирования сообщения:', logErr);
-          // }
+                console.log(`💬 ChatId: ${parsed.chatId}`);
           
           // Отправляем подтверждение отправителю
           const confirmation = JSON.stringify({ 
