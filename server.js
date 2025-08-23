@@ -320,7 +320,13 @@ async function startServer() {
           username: msg.username,
           text: msg.text,
           chatId: msg.chat_id, // Преобразуем chat_id в chatId
-          timestamp: msg.timestamp
+          timestamp: msg.timestamp,
+          replyTo: msg.replyTo ? {
+            id: msg.replyTo.id,
+            username: msg.replyTo.username,
+            text: msg.replyTo.text,
+            timestamp: msg.replyTo.timestamp
+          } : null
         }));
         
         return res.json(normalizedMessages);
@@ -372,16 +378,7 @@ async function startServer() {
         };
 
         // Broadcast to all websocket clients, same as realtime flow
-        try {
-          const outgoing = JSON.stringify({ type: 'message', message: normalizedMsg });
-          wss.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-              client.send(outgoing);
-            }
-          });
-        } catch (broadcastErr) {
-          console.error('⚠️ Broadcast error after HTTP send:', broadcastErr);
-        }
+        broadcastToWebSocketClients(normalizedMsg);
 
         return res.json({ message: 'Message sent successfully', msg: normalizedMsg });
       } catch (e) {
@@ -542,6 +539,31 @@ async function startServer() {
     const server = http.createServer(app);
     const wss = new WebSocket.Server({ server, path: '/ws' });
 
+    // Функция для broadcast сообщений через WebSocket
+    function broadcastToWebSocketClients(message) {
+      if (wss && wss.clients) {
+        try {
+          const outgoing = JSON.stringify({ type: 'message', message });
+          let sentCount = 0;
+          wss.clients.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              try {
+                client.send(outgoing);
+                sentCount++;
+              } catch (sendErr) {
+                console.error('⚠️ Ошибка отправки сообщения клиенту:', sendErr);
+              }
+            }
+          });
+          console.log(`📤 HTTP broadcast: сообщение отправлено ${sentCount} клиентам`);
+        } catch (broadcastErr) {
+          console.error('⚠️ Broadcast error after HTTP send:', broadcastErr);
+        }
+      } else {
+        console.log('⚠️ WebSocket server not ready for broadcast');
+      }
+    }
+
     // Keepalive ping to prevent idle disconnects on hosting providers
     function heartbeat() {
       this.isAlive = true;
@@ -583,6 +605,7 @@ async function startServer() {
           console.log('📨 Получено WebSocket сообщение:', text);
           
           const parsed = JSON.parse(text); // { username, text, chatId, id? }
+          console.log('📨 Парсинг сообщения:', parsed);
 
           if (!parsed?.username || !parsed?.text || !parsed?.chatId) {
             console.warn('⚠️ Неполное сообщение:', parsed);
@@ -597,6 +620,7 @@ async function startServer() {
           }
 
           console.log(`💬 Создаю сообщение от ${parsed.username}: ${parsed.text}`);
+          console.log(`💬 ChatId: ${parsed.chatId}, ReplyTo: ${parsed.replyTo ? 'yes' : 'no'}`);
 
           // Проверяем, есть ли ответ на сообщение
           let replyToMessage = null;
@@ -632,6 +656,7 @@ async function startServer() {
 
           const outgoing = JSON.stringify({ type: 'message', message: normalizedMsg });
           console.log(`📤 Отправляю сообщение всем клиентам: ${outgoing}`);
+          console.log(`📤 WebSocket clients count: ${wss.clients.size}`);
           
           // Отправляем сообщение всем подключенным клиентам
           let sentCount = 0;
@@ -640,13 +665,16 @@ async function startServer() {
               try {
                 client.send(outgoing);
                 sentCount++;
+                console.log(`📤 Сообщение отправлено клиенту ${sentCount}`);
               } catch (sendErr) {
                 console.error('⚠️ Ошибка отправки сообщения клиенту:', sendErr);
               }
+            } else {
+              console.log(`⚠️ Клиент не готов (state: ${client.readyState})`);
             }
           });
           
-          console.log(`✅ Сообщение отправлено ${sentCount} клиентам`);
+          console.log(`✅ Сообщение отправлено ${sentCount} клиентам из ${wss.clients.size}`);
           
           // Логируем успешную отправку
           try {
